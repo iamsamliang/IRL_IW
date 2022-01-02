@@ -16,7 +16,7 @@ class Algorithm(ABC):
 
 
 class MaxLikelihoodIRL(Algorithm):
-    def __init__(self, mdp, featurizer, fixed_reward, batch_size=64, epochs=50, lr=1, weight_decay=0, momentum=0, entropy_weight=1, planning_iters=10):
+    def __init__(self, mdp, featurizer, fixed_reward, batch_size=128, epochs=50, lr=0.1, weight_decay=0, momentum=0, entropy_weight=1, planning_iters=10):
         '''
         Parameters:
           mdp: a representation of the Markov Decision Process
@@ -90,8 +90,9 @@ class MaxLikelihoodIRL(Algorithm):
         Output:
           r_weights: the learned reward weights
           policy: policy associated with the final r_weights
+          all_losses: array of loss per epoch
         '''
-
+        all_losses = []
         trajectory_weight = 1/len(trajectories)
         trajs_dataloader = DataLoader(
             trajectories, batch_size=self.batch_size, shuffle=True, collate_fn=self.__collate_fn)
@@ -153,9 +154,10 @@ class MaxLikelihoodIRL(Algorithm):
                 loss.backward()
                 optimizer.step()
 
-                if batch % 2 == 0:
+                if batch % 10000 == 0:
                     loss, current = loss.item(), batch * len(sample)
                     print(f"loss: {loss:>7f}  [{current:>5d}/{size:>5d}]")
+            all_losses.append(loss.item())
 
         print(f"Final reward weights: {r_weights}\n")
 
@@ -173,7 +175,7 @@ class MaxLikelihoodIRL(Algorithm):
         policy = entropy_regularized_policy_iteration(
             transition_matrix, reward_matrix, discount_rate, self.entropy_weight, self.planning_iters)
 
-        return r_weights, policy
+        return r_weights, policy, all_losses
 
     def get_feature_matrix(self):
         return self.feature_matrix
@@ -239,7 +241,7 @@ class ImitationLearning(Algorithm):
         Output:
           model: trained PyTorch model
         '''
-
+        all_losses = []
         trajs_dataloader = DataLoader(
             trajectories, batch_size=self.batch_size, shuffle=True)
 
@@ -250,15 +252,15 @@ class ImitationLearning(Algorithm):
 
         for epoch in range(self.epochs):
             print(f"Epoch {epoch+1}\n-------------------------------")
-            self.__train(trajs_dataloader, device)
+            self.__train(trajs_dataloader, device, all_losses)
             print()
             if self.scheduler is not None:
                 self.scheduler.step()
         print("Done!")
 
-        return self.model
+        return self.model, all_losses
 
-    def __train(self, dataloader, device):
+    def __train(self, dataloader, device, all_losses):
         size = len(dataloader.dataset)
         self.model.train()
         for batch, (X, y) in enumerate(dataloader):
@@ -273,6 +275,7 @@ class ImitationLearning(Algorithm):
             loss.backward()
             self.optimizer.step()
 
-            if batch % 40000 == 0:
+            if batch % 10000 == 0:
                 loss, current = loss.item(), batch * len(X)
                 print(f"loss: {loss:>7f}  [{current:>5d}/{size:>5d}]")
+        all_losses.append(loss.item())
