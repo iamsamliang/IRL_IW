@@ -1,5 +1,6 @@
 from torch.utils.data import Dataset
 import numpy as np
+import torch
 
 
 # use transforms for transforming data for supervised learning
@@ -94,7 +95,7 @@ class FeaturesDataset(Dataset):
     # state feature vector: gets the features of a state which are just (x, y) coordinates
     # parameter state in form (frozendict({'x': 9, 'y': 0})
     # returns a 2D array [[x, y, state_identifier]]
-    def __getStateFeature(self, state):
+    def getStateFeature(self, state):
         f = self.mdp.location_features.get(state, '.')
         if f in self.color_features:
             color_index = self.color_features.index(f)
@@ -118,7 +119,7 @@ class FeaturesDataset(Dataset):
             for state in state_traj:
                 # states are format (frozendict({'x': 9, 'y': 0})
                 # convert states to (x, y, state_identifier)
-                state_feature = self.__getStateFeature(state)
+                state_feature = self.getStateFeature(state)
                 all_features.append(state_feature)
             for action in action_traj:
                 # actions are format frozendict({'dy': 1, 'dx': 0})
@@ -127,4 +128,4 @@ class FeaturesDataset(Dataset):
                 all_actions.append(conv_action)
 
         # all_features must be a 2d array of floats and all_actions must be an array of integers
-        return np.array(all_features, dtype='f'), np.array(all_actions)
+        return np.array(all_features, dtype='f'), torch.tensor(all_actions)

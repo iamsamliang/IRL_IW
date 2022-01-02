@@ -16,7 +16,7 @@ class Algorithm(ABC):
 
 
 class MaxLikelihoodIRL(Algorithm):
-    def __init__(self, mdp, featurizer, fixed_reward, batch_size=64, epochs=50, lr=1, entropy_weight=1, planning_iters=10):
+    def __init__(self, mdp, featurizer, fixed_reward, batch_size=64, epochs=50, lr=1, weight_decay=0, momentum=0, entropy_weight=1, planning_iters=10):
         '''
         Parameters:
           mdp: a representation of the Markov Decision Process
@@ -36,6 +36,8 @@ class MaxLikelihoodIRL(Algorithm):
         self.batch_size = batch_size
         self.epochs = epochs
         self.lr = lr
+        self.weight_decay = weight_decay
+        self.momentum = momentum
         self.entropy_weight = entropy_weight
         self.planning_iters = planning_iters
 
@@ -98,6 +100,8 @@ class MaxLikelihoodIRL(Algorithm):
         r_weights = torch.tensor(
             np.random.randn(self.feature_matrix.shape[-1]))
 
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"Using {device}")
         print(f"Inital reward weights: {r_weights}\n")
 
         # try using the true reward weights to debug - Checked. Has basically the same rewards
@@ -107,7 +111,8 @@ class MaxLikelihoodIRL(Algorithm):
         discount_rate = torch.tensor(self.mdp.discount_rate)
         transition_matrix = torch.tensor(self.mdp.transition_matrix)
 
-        optimizer = torch.optim.SGD([r_weights], self.lr)
+        optimizer = torch.optim.SGD(
+            [r_weights], lr=self.lr, weight_decay=self.weight_decay, momentum=self.momentum)
 
         size = len(trajs_dataloader.dataset)
 
@@ -241,35 +246,32 @@ class ImitationLearning(Algorithm):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"Using {device}\n")
 
-        classifier = self.model.to(device)
+        self.model = self.model.to(device)
 
         for epoch in range(self.epochs):
             print(f"Epoch {epoch+1}\n-------------------------------")
-            self.__train(trajs_dataloader, classifier,
-                         self.loss_fn, self.optimizer, device)
+            self.__train(trajs_dataloader, device)
             print()
             if self.scheduler is not None:
                 self.scheduler.step()
         print("Done!")
 
-        self.model = classifier
+        return self.model
 
-        return classifier
-
-    def __train(self, dataloader, model, loss_fn, optimizer, device):
+    def __train(self, dataloader, device):
         size = len(dataloader.dataset)
-        model.train()
+        self.model.train()
         for batch, (X, y) in enumerate(dataloader):
             X, y = X.to(device), y.to(device)
 
             # Compute prediction error
-            pred = model(X)
-            loss = loss_fn(pred, y)
+            pred = self.model(X)
+            loss = self.loss_fn(pred, y)
 
             # Backpropagation
-            optimizer.zero_grad()
+            self.optimizer.zero_grad()
             loss.backward()
-            optimizer.step()
+            self.optimizer.step()
 
             if batch % 40000 == 0:
                 loss, current = loss.item(), batch * len(X)
