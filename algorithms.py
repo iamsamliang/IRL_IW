@@ -1,10 +1,12 @@
 from abc import ABC, abstractmethod
 from msdm.algorithms.entregpolicyiteration import entropy_regularized_policy_iteration
+from msdm.core.problemclasses.mdp import TabularPolicy
 from torch.utils.data.dataloader import DataLoader
 from dataset import TrajectoryDataset, FeaturesDataset
 import torch
 import numpy as np
 from frozendict import frozendict
+from itertools import combinations
 
 
 class Algorithm(ABC):
@@ -16,7 +18,7 @@ class Algorithm(ABC):
 
 
 class MaxLikelihoodIRL(Algorithm):
-    def __init__(self, mdp, featurizer, fixed_reward, batch_size=128, epochs=50, lr=0.1, weight_decay=0, momentum=0, entropy_weight=1, planning_iters=10):
+    def __init__(self, mdp, featurizer, fixed_reward, batch_size=128, epochs=50, lr=1, weight_decay=0, momentum=0.9, entropy_weight=1, planning_iters=10):
         '''
         Parameters:
           mdp: a representation of the Markov Decision Process
@@ -63,7 +65,7 @@ class MaxLikelihoodIRL(Algorithm):
                 for next_state in mdp.next_state_dist(state, action).support:
                     features.update(featurizer(
                         state, action, next_state).keys())
-        # OR all features must be listed in the dictionary no matter whether they are 0
+
         features = sorted(features)
         num_features = len(features)
         # update feature_matrix using user-defined featurizer
@@ -182,6 +184,125 @@ class MaxLikelihoodIRL(Algorithm):
 
     def get_fixed_reward_matrix(self):
         return self.fixed_reward_matrix
+
+    def __collate_fn(self, batch):
+        return batch
+
+
+class ConstruedLikelihoodIRL(MaxLikelihoodIRL):
+    def __init__(self, mdp, featurizer, fixed_reward, batch_size=128, epochs=50, lr=1, weight_decay=0, momentum=0.9, entropy_weight=1, planning_iters=10):
+        super().__init__(mdp, featurizer, fixed_reward, batch_size, epochs,
+                         lr, weight_decay, momentum, entropy_weight, planning_iters)
+        self.features = [f for f in sorted(
+            mdp.feature_locations.keys()) if f not in 's']
+        # all n choose 2 feature pairs
+        self.all_feature_pairs = list(combinations(self.features, 2))
+
+    def learn(self, trajectories: TrajectoryDataset):
+        '''
+        Parameters:
+          trajectories: TrajectoryDataset trajectories
+        Output:
+          r_weights: the learned reward weights
+          policy: policy associated with the final r_weights
+          all_losses: array of loss per epoch
+        '''
+        all_losses = []
+        trajectory_weight = 1/len(trajectories)
+        trajs_dataloader = DataLoader(
+            trajectories, batch_size=self.batch_size, shuffle=True, collate_fn=self.__collate_fn)
+
+        # randomize weights
+        r_weights = torch.tensor(
+            np.random.randn(self.feature_matrix.shape[-1]))
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"Using {device}")
+        print(f"Inital reward weights: {r_weights}\n")
+
+        r_weights.requires_grad = True
+        discount_rate = torch.tensor(self.mdp.discount_rate)
+        transition_matrix = torch.tensor(self.mdp.transition_matrix)
+
+        optimizer = torch.optim.SGD(
+            [r_weights], lr=self.lr, weight_decay=self.weight_decay, momentum=self.momentum)
+
+        size = len(trajs_dataloader.dataset)
+
+        softmax_fn = torch.nn.Softmax(dim=0)
+
+        for _ in range(self.epochs):
+            for batch, sample in enumerate(trajs_dataloader):
+                optimizer.zero_grad()
+
+                num_construals = len(self.all_feature_pairs)
+                construed_policies = []
+                vor = torch.zeros(num_construals)
+
+                # select the appropriate reward weights per construal
+                for feature_pair in self.all_feature_pairs:
+                    weight_mask = torch.zeros(len(self.features))
+                    for feature in feature_pair:
+                        weight_mask[self.features.index(feature)] = 1
+                    feature_reward_matrix = torch.einsum(
+                        "sanf,f->san",
+                        self.feature_matrix,
+                        r_weights * weight_mask
+                    )
+                    reward_matrix = feature_reward_matrix + self.fixed_reward_matrix
+                    terminal_index = self.mdp.state_index.get(
+                        frozendict({'x': -1, 'y': -1}))
+                    reward_matrix[:, :, terminal_index] = 0
+                    res = entropy_regularized_policy_iteration(
+                        transition_matrix, reward_matrix, discount_rate, self.entropy_weight, self.planning_iters).policy
+                    construed_policies.append(res)
+
+                    policy = TabularPolicy.from_matrix(
+                        states=self.mdp.state_list,
+                        actions=self.mdp.action_list,
+                        policy_matrix=res.detach().numpy()
+                    )
+                    vor[len(construed_policies) -
+                        1] = policy.evaluate_on(self.mdp).initial_value
+                # softmax distribution over the construals
+                softmax_vor = softmax_fn(vor)
+
+                loss = torch.tensor(0.0)
+
+                for construal_index, construed_policy in enumerate(construed_policies):
+                    for state_traj, action_traj in sample:
+                        for index in range(len(state_traj)):
+                            state = state_traj[index]
+                            action = action_traj[index]
+                            state_index = self.mdp.state_index.get(state)
+                            action_index = self.mdp.action_index.get(action)
+                            loss -= torch.log(construed_policy[state_index,
+                                                               action_index]) * trajectory_weight * softmax_vor[construal_index]
+                loss.backward()
+                optimizer.step()
+
+                if batch % 10000 == 0:
+                    loss, current = loss.item(), batch * len(sample)
+                    print(f"loss: {loss:>7f}  [{current:>5d}/{size:>5d}]")
+            all_losses.append(loss.item())
+
+        print(f"Final reward weights: {r_weights}\n")
+
+        # compute policy from learned weights
+        feature_reward_matrix = torch.einsum(
+            "sanf,f->san",
+            self.feature_matrix,
+            r_weights
+        )
+
+        reward_matrix = feature_reward_matrix + self.fixed_reward_matrix
+        terminal_index = self.mdp.state_index.get(
+            frozendict({'x': -1, 'y': -1}))
+        reward_matrix[:, :, terminal_index] = 0
+        policy = entropy_regularized_policy_iteration(
+            transition_matrix, reward_matrix, discount_rate, self.entropy_weight, self.planning_iters)
+
+        return r_weights, policy, all_losses
 
     def __collate_fn(self, batch):
         return batch
