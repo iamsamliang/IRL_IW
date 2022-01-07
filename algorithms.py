@@ -194,7 +194,7 @@ class ConstruedLikelihoodIRL(MaxLikelihoodIRL):
         super().__init__(mdp, featurizer, fixed_reward, batch_size, epochs,
                          lr, weight_decay, momentum, entropy_weight, planning_iters)
         self.features = [f for f in sorted(
-            mdp.feature_locations.keys()) if f not in 's']
+            mdp.feature_locations.keys()) if f not in 'sg']
         # all n choose 2 feature pairs
         self.all_feature_pairs = list(combinations(self.features, 2))
 
