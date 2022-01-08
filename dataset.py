@@ -59,7 +59,7 @@ class FeaturesDataset(Dataset):
     def __init__(self, mdp, trajectories, transform=None, target_transform=None):
         self.mdp = mdp
         self.color_features = sorted(mdp.feature_locations.keys())
-        self.color_features = [f for f in self.color_features if f not in 'gs']
+        self.color_features = [f for f in self.color_features if f not in 's']
         self.state_features, self.actions = self.__getFeaturesActions(
             trajectories=trajectories)
         self.transform = transform
