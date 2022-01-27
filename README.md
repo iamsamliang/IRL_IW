@@ -1,6 +1,4 @@
-# Construing the Reward Function in Maximum Likelihood Inverse Reinforcement Learning (MLIRL)
-
-## MLIRL with Limited Cognitive Resources
+# Construing the Reward Function: Maximum Likelihood Inverse Reinforcement Learning with Limited Cognitive Resources
 
 ### To set up
 
